@@ -86,16 +86,52 @@ func decodePCM(t *testing.T, path string, channels int) []byte {
 	return pcm
 }
 
-// deinterleaveCh0 extracts channel 0 from interleaved S16LE PCM as float64.
-func deinterleaveCh0(pcm []byte, channels int) []float64 {
+// deinterleaveCh extracts channel ch from interleaved S16LE PCM as float64.
+func deinterleaveCh(pcm []byte, channels, ch int) []float64 {
 	frames := len(pcm) / (2 * channels)
 	out := make([]float64, frames)
 	for i := range frames {
-		lo := pcm[i*2*channels]
-		hi := pcm[i*2*channels+1]
-		out[i] = float64(int16(binary.LittleEndian.Uint16([]byte{lo, hi})))
+		off := (i*channels + ch) * 2
+		out[i] = float64(int16(binary.LittleEndian.Uint16(pcm[off : off+2])))
 	}
 	return out
+}
+
+// deinterleaveCh0 extracts channel 0, the common case.
+func deinterleaveCh0(pcm []byte, channels int) []float64 {
+	return deinterleaveCh(pcm, channels, 0)
+}
+
+// interleaveStereo weaves two equal-length mono S16LE buffers into one stereo
+// buffer, so a test can drive the two channels with distinct signals.
+func interleaveStereo(left, right []byte) []byte {
+	out := make([]byte, len(left)+len(right))
+	for i := 0; i+1 < len(left); i += 2 {
+		out[i*2] = left[i]
+		out[i*2+1] = left[i+1]
+		out[i*2+2] = right[i]
+		out[i*2+3] = right[i+1]
+	}
+	return out
+}
+
+// ffprobeChannels asks ffprobe how many channels the stream at path carries.
+func ffprobeChannels(t *testing.T, path string) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error",
+		"-allowed_extensions", "ALL",
+		"-show_streams", "-print_format", "json", path).Output()
+	require.NoError(t, err, "ffprobe failed: %s", out)
+	var probe struct {
+		Streams []struct {
+			Channels int `json:"channels"`
+		} `json:"streams"`
+	}
+	require.NoError(t, json.Unmarshal(out, &probe))
+	require.Len(t, probe.Streams, 1)
+	return probe.Streams[0].Channels
 }
 
 // normXCorr is the normalized cross-correlation of a against b at the given lag,
@@ -183,6 +219,14 @@ func chirp(nSamples, channels, rate int, f0, f1 float64) []byte {
 func feedChirp(t *testing.T, s *hls.Stream, start time.Time, seconds, channels int, f0, f1 float64) (src []byte, next time.Time) {
 	t.Helper()
 	src = chirp(seconds*testRate, channels, testRate, f0, f1)
+	return src, feedPCM(t, s, start, src, channels)
+}
+
+// feedPCM writes interleaved S16LE PCM through the stream in chunks that do not
+// divide the 1024-sample AAC access unit, so partial-frame buffering is
+// exercised on every write. It returns the next timestamp.
+func feedPCM(t *testing.T, s *hls.Stream, start time.Time, src []byte, channels int) (next time.Time) {
+	t.Helper()
 	const chunkBytes = 1200 // samples per write; deliberately not a frame multiple
 	frameBytes := channels * 2
 	at := start
@@ -196,7 +240,7 @@ func feedChirp(t *testing.T, s *hls.Stream, start time.Time, seconds, channels i
 		at = at.Add(time.Duration(samples) * time.Second / testRate)
 		off = end
 	}
-	return src, at
+	return at
 }
 
 // TestInteropStreamDecodesToSource is the core end-to-end proof: a known chirp
@@ -244,8 +288,12 @@ func TestInteropStreamDecodesToSource(t *testing.T) {
 	assert.Less(t, abs(lag), 256, "playback is misaligned by %d samples; the edit list should align it to zero", lag)
 }
 
-// TestInteropStereoDecodes proves the muxer is not silently mono-only: a stereo
-// source decodes to two non-silent channels that both track the input.
+// TestInteropStereoDecodes proves the muxer carries two genuinely independent
+// channels, not a mono signal duplicated. The two channels are fed distinct
+// chirps in disjoint bands, ffprobe confirms the stream really is two-channel,
+// and each decoded channel is matched to its OWN source and told apart from the
+// other. Feeding identical channels (or checking only channel 0) would let a
+// mono collapse pass unnoticed.
 func TestInteropStereoDecodes(t *testing.T) {
 	t.Parallel()
 	requireFFmpeg(t)
@@ -258,17 +306,31 @@ func TestInteropStereoDecodes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	src, _ := feedChirp(t, s, sampleTime(0), 4, 2, 400, 6000)
+	const seconds = 4
+	left := chirp(seconds*testRate, 1, testRate, 300, 3000)
+	right := chirp(seconds*testRate, 1, testRate, 4000, 7000)
+	feedPCM(t, s, sampleTime(0), interleaveStereo(left, right), 2)
 	require.NoError(t, s.Close())
 
-	dec := decodePCM(t, writeHLSDir(t, s), 2)
-	require.NotEmpty(t, dec)
+	playlist := writeHLSDir(t, s)
+	require.Equal(t, 2, ffprobeChannels(t, playlist), "the stream must be genuinely two-channel")
 
-	srcF := deinterleaveCh0(src, 2)
-	decF := deinterleaveCh0(dec, 2)
-	require.Positive(t, rms(decF), "channel 0 decoded to silence")
-	corr, lag := bestCorrelation(srcF, decF, interopMaxLag)
-	assert.Greater(t, corr, 0.9, "stereo channel 0 does not match source (corr %.3f at lag %d)", corr, lag)
+	dec := decodePCM(t, playlist, 2)
+	require.NotEmpty(t, dec)
+	decL := deinterleaveCh(dec, 2, 0)
+	decR := deinterleaveCh(dec, 2, 1)
+	srcL := deinterleaveCh(left, 1, 0)
+	srcR := deinterleaveCh(right, 1, 0)
+
+	lOwn, _ := bestCorrelation(decL, srcL, interopMaxLag)
+	lCross, _ := bestCorrelation(decL, srcR, interopMaxLag)
+	assert.Greater(t, lOwn, 0.85, "left channel does not match its source (%.3f)", lOwn)
+	assert.Greater(t, lOwn, lCross+0.2, "left channel matches the right source too well to be distinct (own %.3f, other %.3f)", lOwn, lCross)
+
+	rOwn, _ := bestCorrelation(decR, srcR, interopMaxLag)
+	rCross, _ := bestCorrelation(decR, srcL, interopMaxLag)
+	assert.Greater(t, rOwn, 0.85, "right channel does not match its source (%.3f)", rOwn)
+	assert.Greater(t, rOwn, rCross+0.2, "right channel matches the left source too well to be distinct (own %.3f, other %.3f)", rOwn, rCross)
 }
 
 // TestInteropFFprobeReportsAACStream asks ffprobe to describe the stream,
@@ -406,7 +468,7 @@ func TestInteropWindowEvictionDecodes(t *testing.T) {
 	playlist := writeHLSDir(t, s)
 	body, err := os.ReadFile(playlist)
 	require.NoError(t, err)
-	assert.NotContains(t, string(body), "#EXT-X-MEDIA-SEQUENCE:0\n", "media sequence must have advanced past the evicted segments")
+	assert.Regexp(t, `(?m)^#EXT-X-MEDIA-SEQUENCE:[1-9][0-9]*$`, string(body), "media sequence must be present and nonzero after eviction")
 
 	// The oldest retained segment starts partway into the source; its PDT gives
 	// the exact sample offset. The decoded window should then be that tail of
