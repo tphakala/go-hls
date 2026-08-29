@@ -158,8 +158,21 @@ func FuzzHandlerPath(f *testing.F) {
 		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
-		if rec.Code >= 500 {
-			t.Fatalf("path %q produced a server error %d", path, rec.Code)
+
+		// The request method is always GET, so the handler's only outcomes are
+		// serving a known resource (200) or refusing an unknown path (404):
+		// never a 5xx, and never a 405 (that needs a non-GET/HEAD method).
+		if rec.Code != http.StatusOK && rec.Code != http.StatusNotFound {
+			t.Fatalf("path %q produced status %d, want 200 or 404", path, rec.Code)
+		}
+		// A 200 must carry one of the three content types the handler serves,
+		// so no path can smuggle a body out under an unexpected type.
+		if rec.Code == http.StatusOK {
+			switch ct := rec.Header().Get("Content-Type"); ct {
+			case "application/vnd.apple.mpegurl", "video/mp4", "video/iso.segment":
+			default:
+				t.Fatalf("path %q served 200 with unexpected content type %q", path, ct)
+			}
 		}
 	})
 }

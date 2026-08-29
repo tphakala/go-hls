@@ -144,32 +144,58 @@ func rms(x []float64) float64 {
 	return math.Sqrt(sum / float64(len(x)))
 }
 
-// feedTone writes seconds of a sine at hz through the stream in chunks that do
-// not divide the 1024-sample AAC access unit, so partial-frame buffering is
-// exercised on every write. It returns the source PCM and the next timestamp.
-func feedTone(t *testing.T, s *hls.Stream, start time.Time, seconds, channels int, hz float64) (src []byte, next time.Time) {
-	t.Helper()
-	const chunk = 1200
-	total := seconds * testRate
-	at := start
-	for written := 0; written < total; {
-		n := chunk
-		if written+n > total {
-			n = total - written
+// chirp generates a linear frequency sweep from f0 to f1 over its whole length,
+// as interleaved S16LE PCM. Unlike a fixed sine, a chirp is not periodic on the
+// scale of an access unit: its instantaneous frequency is different at every
+// moment, so a dropped or duplicated access unit shifts later audio against a
+// differently-pitched stretch of the source and the cross-correlation collapses
+// globally rather than realigning to an identical phase. That is what makes it a
+// signal a correlation test can actually catch sample loss with.
+func chirp(nSamples, channels, rate int, f0, f1 float64) []byte {
+	buf := make([]byte, nSamples*channels*2)
+	dur := float64(nSamples) / float64(rate)
+	for i := range nSamples {
+		tt := float64(i) / float64(rate)
+		// Phase of a linear sweep: integral of the instantaneous frequency
+		// f0 + (f1-f0)/dur * t over [0, t].
+		phase := 2 * math.Pi * (f0*tt + (f1-f0)/(2*dur)*tt*tt)
+		v := int16(math.Round(8000 * math.Sin(phase)))
+		for ch := range channels {
+			off := (i*channels + ch) * 2
+			buf[off] = byte(v)
+			buf[off+1] = byte(v >> 8)
 		}
-		buf := tone(n, channels, testRate, hz)
-		require.NoError(t, s.Write(buf, at))
-		src = append(src, buf...)
-		at = at.Add(time.Duration(n) * time.Second / testRate)
-		written += n
+	}
+	return buf
+}
+
+// feedChirp writes seconds of a chirp swept from f0 to f1 through the stream in
+// chunks that do not divide the 1024-sample AAC access unit, so partial-frame
+// buffering is exercised on every write. It returns the source PCM and the next
+// timestamp.
+func feedChirp(t *testing.T, s *hls.Stream, start time.Time, seconds, channels int, f0, f1 float64) (src []byte, next time.Time) {
+	t.Helper()
+	src = chirp(seconds*testRate, channels, testRate, f0, f1)
+	const chunkBytes = 1200 // samples per write; deliberately not a frame multiple
+	frameBytes := channels * 2
+	at := start
+	for off := 0; off < len(src); {
+		end := off + chunkBytes*frameBytes
+		if end > len(src) {
+			end = len(src)
+		}
+		require.NoError(t, s.Write(src[off:end], at))
+		samples := (end - off) / frameBytes
+		at = at.Add(time.Duration(samples) * time.Second / testRate)
+		off = end
 	}
 	return src, at
 }
 
-// TestInteropStreamDecodesToSource is the core end-to-end proof: a known sine
+// TestInteropStreamDecodesToSource is the core end-to-end proof: a known chirp
 // fed through the muxer decodes back, through ffmpeg reading the playlist, to
-// the same sine. A wrong sample duration, a broken edit list, a dropped access
-// unit or a malformed box would all break the correlation.
+// the same chirp at lag zero. A wrong sample duration, a broken edit list, a
+// dropped access unit or a malformed box would all break the correlation.
 func TestInteropStreamDecodesToSource(t *testing.T) {
 	t.Parallel()
 	requireFFmpeg(t)
@@ -182,7 +208,7 @@ func TestInteropStreamDecodesToSource(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	src, _ := feedTone(t, s, sampleTime(0), 5, 1, 3000)
+	src, _ := feedChirp(t, s, sampleTime(0), 5, 1, 300, 8000)
 	require.NoError(t, s.Close())
 
 	playlist := writeHLSDir(t, s)
@@ -198,18 +224,17 @@ func TestInteropStreamDecodesToSource(t *testing.T) {
 	require.InDelta(t, len(srcF), len(decF), float64(testRate)/2,
 		"decoded length diverges from source by more than half a second")
 
-	// The decoded sine matches the source at a single constant lag. Because the
-	// lag is constant and the correlation high, every sample is present in
-	// order: a dropped or duplicated access unit would misalign one half of the
-	// signal against the other and collapse the correlation, not merely shift
-	// it. The lag itself is a small fixed offset (tens of milliseconds) from
-	// ffmpeg's HLS-demuxer and AAC-decoder priming, not a container defect; the
-	// edit-list priming trim on this exact writer config is verified sample-
-	// accurately in go-m4a's aacm4a suite. The bound here only has to exclude a
-	// gross timeline break, which would be a whole segment (two seconds) off.
+	// The decoded chirp matches the source at lag zero: the container edit list
+	// trims the AAC priming so playback aligns sample-accurately, and because
+	// the chirp's frequency is different at every instant, any dropped or
+	// duplicated access unit would shift later audio against a differently-
+	// pitched stretch of the source and collapse the correlation globally
+	// rather than merely offset it. So the near-1.0 peak at a near-zero lag is a
+	// real proof that every sample is present and in order, not an alignment a
+	// periodic signal could fake.
 	corr, lag := bestCorrelation(srcF, decF, testRate/4)
-	assert.Greater(t, corr, 0.9, "decoded audio does not match the source sine (peak corr %.3f at lag %d)", corr, lag)
-	assert.Less(t, abs(lag), testRate/8, "playback is misaligned by %d samples, far more than codec priming", lag)
+	assert.Greater(t, corr, 0.95, "decoded audio does not match the source chirp (peak corr %.3f at lag %d)", corr, lag)
+	assert.Less(t, abs(lag), 256, "playback is misaligned by %d samples; the edit list should align it to zero", lag)
 }
 
 // TestInteropStereoDecodes proves the muxer is not silently mono-only: a stereo
@@ -226,7 +251,7 @@ func TestInteropStereoDecodes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	src, _ := feedTone(t, s, sampleTime(0), 4, 2, 2500)
+	src, _ := feedChirp(t, s, sampleTime(0), 4, 2, 400, 6000)
 	require.NoError(t, s.Close())
 
 	dec := decodePCM(t, writeHLSDir(t, s), 2)
@@ -252,7 +277,7 @@ func TestInteropFFprobeReportsAACStream(t *testing.T) {
 		BitrateKbps: 96,
 	})
 	require.NoError(t, err)
-	_, _ = feedTone(t, s, sampleTime(0), 3, 1, 3000)
+	_, _ = feedChirp(t, s, sampleTime(0), 3, 1, 300, 8000)
 	require.NoError(t, s.Close())
 
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -294,11 +319,13 @@ func TestInteropStallDiscontinuityResumeDecodes(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Four seconds of one tone, then a stall well past MaxStallGap, then four
-	// seconds of a clearly different tone from the resume instant.
-	_, afterFirst := feedTone(t, s, sampleTime(0), 4, 1, 2000)
+	// Four seconds of a low chirp, then a stall well past MaxStallGap, then four
+	// seconds of a clearly separate high chirp from the resume instant. The two
+	// bands are disjoint so each decoded half can be matched to its own source
+	// and told apart from the other.
+	srcPre, afterFirst := feedChirp(t, s, sampleTime(0), 4, 1, 300, 1500)
 	resume := afterFirst.Add(30 * time.Second)
-	_, _ = feedTone(t, s, resume, 4, 1, 6000)
+	srcPost, _ := feedChirp(t, s, resume, 4, 1, 4000, 7000)
 	require.NoError(t, s.Close())
 
 	stats := s.Stats()
@@ -309,14 +336,83 @@ func TestInteropStallDiscontinuityResumeDecodes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "#EXT-X-DISCONTINUITY\n", "the playlist must mark the timeline break")
 
-	// ffmpeg must decode across the discontinuity without error, and the result
-	// must carry real audio on both sides of the break rather than truncating
-	// at the gap.
+	// ffmpeg decodes across the discontinuity into one continuous stream: the
+	// gap carries no samples, so the pre-gap audio is followed directly by the
+	// post-gap audio, roughly eight seconds total.
 	decF := deinterleaveCh0(decodePCM(t, playlist, 1), 1)
-	require.Greater(t, len(decF), 6*testRate, "decoded audio is too short to contain both halves")
-	half := len(decF) / 2
-	assert.Positive(t, rms(decF[:half]), "pre-gap audio decoded to silence")
-	assert.Positive(t, rms(decF[half:]), "post-gap audio decoded to silence")
+	require.Greater(t, len(decF), 7*testRate, "decoded audio is too short to contain both halves")
+
+	// Split at the midpoint and take an interior slice of each half, away from
+	// the seam and the priming edges, then prove each interior actually decoded
+	// to ITS OWN source chirp and not the other. rms > 0 alone would pass on
+	// looped or garbage audio; matching each half to its distinct source is what
+	// proves the timeline resumed with the correct signal on each side.
+	mid := len(decF) / 2
+	preDec := decF[testRate/2 : mid-testRate/2]
+	postDec := decF[mid+testRate/2 : len(decF)-testRate/2]
+	preSrc := deinterleaveCh0(srcPre, 1)
+	postSrc := deinterleaveCh0(srcPost, 1)
+
+	preOwn, _ := bestCorrelation(preDec, preSrc, testRate)
+	preOther, _ := bestCorrelation(preDec, postSrc, testRate)
+	assert.Greater(t, preOwn, 0.8, "pre-gap audio does not match the pre-gap source chirp (%.3f)", preOwn)
+	assert.Greater(t, preOwn, preOther+0.2, "pre-gap audio matches the post-gap source too well to be distinct (own %.3f, other %.3f)", preOwn, preOther)
+
+	postOwn, _ := bestCorrelation(postDec, postSrc, testRate)
+	postOther, _ := bestCorrelation(postDec, preSrc, testRate)
+	assert.Greater(t, postOwn, 0.8, "post-gap audio does not match the post-gap source chirp (%.3f)", postOwn)
+	assert.Greater(t, postOwn, postOther+0.2, "post-gap audio matches the pre-gap source too well to be distinct (own %.3f, other %.3f)", postOwn, postOther)
+}
+
+// TestInteropWindowEvictionDecodes exercises the sliding window against a real
+// demuxer: a stream long enough to overflow the window drops its oldest
+// segments, so the playlist advertises EXT-X-MEDIA-SEQUENCE above zero and the
+// retained segments are a tail slice of the source. ffmpeg must still decode
+// that partial presentation, and it must be the correct contiguous stretch of
+// the source with nothing dropped inside it.
+func TestInteropWindowEvictionDecodes(t *testing.T) {
+	t.Parallel()
+	requireFFmpeg(t)
+
+	s, err := hls.New(&hls.Config{
+		Codec:       AACLC(),
+		SampleRate:  testRate,
+		Channels:    1,
+		BitrateKbps: 96,
+	})
+	require.NoError(t, err)
+
+	// Sixteen seconds at two-second segments is eight segments, more than the
+	// six-segment default window, so the oldest two are evicted.
+	src, _ := feedChirp(t, s, sampleTime(0), 16, 1, 300, 8000)
+	require.NoError(t, s.Close())
+
+	stats := s.Stats()
+	require.Greater(t, stats.Segments, uint64(hls.DefaultWindowSize), "not enough segments to force eviction")
+	require.Equal(t, hls.DefaultWindowSize, stats.Retained, "the window must cap at its size")
+
+	playlist := writeHLSDir(t, s)
+	body, err := os.ReadFile(playlist)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "#EXT-X-MEDIA-SEQUENCE:0\n", "media sequence must have advanced past the evicted segments")
+
+	// The oldest retained segment starts partway into the source; its PDT gives
+	// the exact sample offset. The decoded window should then be that tail of
+	// the source, aligned near lag zero.
+	var first hls.Segment
+	for seq := uint64(0); seq < stats.Segments; seq++ {
+		if seg, ok := s.Segment(seq); ok {
+			first = seg
+			break
+		}
+	}
+	offset := int(math.Round(first.PDT.Sub(sampleTime(0)).Seconds() * float64(testRate)))
+	require.Positive(t, offset, "the oldest retained segment should not be the first one cut")
+
+	srcTail := deinterleaveCh0(src, 1)[offset:]
+	decF := deinterleaveCh0(decodePCM(t, playlist, 1), 1)
+	corr, lag := bestCorrelation(decF, srcTail, 1024)
+	assert.Greater(t, corr, 0.95, "the retained window is not the matching tail of the source (corr %.3f at lag %d)", corr, lag)
 }
 
 // abs is a small integer helper for the lag checks.
