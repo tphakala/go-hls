@@ -146,13 +146,6 @@ retains on the order of 150 kB.
 - Segments live in memory and are served from memory. Nothing is written to
   disk.
 
-## Status
-
-Extracted from the native HLS streaming path of
-[BirdNET-Go](https://github.com/tphakala/birdnet-go), where it was built to
-replace an FFmpeg subprocess for live dashboard audio and validated against
-hls.js and Apple's HLS stack. The API is v0.x and may still move.
-
 ## License
 
 MIT
