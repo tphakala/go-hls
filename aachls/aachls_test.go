@@ -198,6 +198,6 @@ type stubEncoder struct {
 
 func (s stubEncoder) EncodeInterleaved(_ []byte, _ hls.EmitFunc) error { return nil }
 func (s stubEncoder) Flush(_ hls.EmitFunc) error                       { return nil }
-func (s stubEncoder) DecoderConfig() []byte                        { return s.asc }
-func (s stubEncoder) Delay() int                                   { return s.delay }
-func (s stubEncoder) Close() error                                 { return nil }
+func (s stubEncoder) DecoderConfig() []byte                            { return s.asc }
+func (s stubEncoder) Delay() int                                       { return s.delay }
+func (s stubEncoder) Close() error                                     { return nil }
