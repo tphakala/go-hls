@@ -119,6 +119,13 @@ func normXCorr(a, b []float64, lag int) float64 {
 	return dot / math.Sqrt(na*nb)
 }
 
+// interopMaxLag bounds the correlation lag searches. It is a little over one
+// AAC access unit (1024 samples), so a dropped or duplicated unit's shift falls
+// inside the window and surfaces as a failing lag or a collapsed correlation,
+// while the search stays cheap: a full-rate sweep is O(maxLag*len), which is
+// minutes under the race detector for a multi-second signal.
+const interopMaxLag = 2048
+
 // bestCorrelation searches a lag window and returns the peak normalized
 // correlation and the lag at which it occurs.
 func bestCorrelation(src, dec []float64, maxLag int) (corr float64, lag int) {
@@ -208,7 +215,7 @@ func TestInteropStreamDecodesToSource(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	src, _ := feedChirp(t, s, sampleTime(0), 5, 1, 300, 8000)
+	src, _ := feedChirp(t, s, sampleTime(0), 4, 1, 300, 8000)
 	require.NoError(t, s.Close())
 
 	playlist := writeHLSDir(t, s)
@@ -232,7 +239,7 @@ func TestInteropStreamDecodesToSource(t *testing.T) {
 	// rather than merely offset it. So the near-1.0 peak at a near-zero lag is a
 	// real proof that every sample is present and in order, not an alignment a
 	// periodic signal could fake.
-	corr, lag := bestCorrelation(srcF, decF, testRate/4)
+	corr, lag := bestCorrelation(srcF, decF, interopMaxLag)
 	assert.Greater(t, corr, 0.95, "decoded audio does not match the source chirp (peak corr %.3f at lag %d)", corr, lag)
 	assert.Less(t, abs(lag), 256, "playback is misaligned by %d samples; the edit list should align it to zero", lag)
 }
@@ -260,7 +267,7 @@ func TestInteropStereoDecodes(t *testing.T) {
 	srcF := deinterleaveCh0(src, 2)
 	decF := deinterleaveCh0(dec, 2)
 	require.Positive(t, rms(decF), "channel 0 decoded to silence")
-	corr, lag := bestCorrelation(srcF, decF, testRate/10)
+	corr, lag := bestCorrelation(srcF, decF, interopMaxLag)
 	assert.Greater(t, corr, 0.9, "stereo channel 0 does not match source (corr %.3f at lag %d)", corr, lag)
 }
 
@@ -323,9 +330,9 @@ func TestInteropStallDiscontinuityResumeDecodes(t *testing.T) {
 	// seconds of a clearly separate high chirp from the resume instant. The two
 	// bands are disjoint so each decoded half can be matched to its own source
 	// and told apart from the other.
-	srcPre, afterFirst := feedChirp(t, s, sampleTime(0), 4, 1, 300, 1500)
+	srcPre, afterFirst := feedChirp(t, s, sampleTime(0), 3, 1, 300, 1500)
 	resume := afterFirst.Add(30 * time.Second)
-	srcPost, _ := feedChirp(t, s, resume, 4, 1, 4000, 7000)
+	srcPost, _ := feedChirp(t, s, resume, 3, 1, 4000, 7000)
 	require.NoError(t, s.Close())
 
 	stats := s.Stats()
@@ -338,28 +345,31 @@ func TestInteropStallDiscontinuityResumeDecodes(t *testing.T) {
 
 	// ffmpeg decodes across the discontinuity into one continuous stream: the
 	// gap carries no samples, so the pre-gap audio is followed directly by the
-	// post-gap audio, roughly eight seconds total.
+	// post-gap audio, roughly six seconds total.
 	decF := deinterleaveCh0(decodePCM(t, playlist, 1), 1)
-	require.Greater(t, len(decF), 7*testRate, "decoded audio is too short to contain both halves")
+	require.Greater(t, len(decF), 5*testRate, "decoded audio is too short to contain both halves")
 
-	// Split at the midpoint and take an interior slice of each half, away from
-	// the seam and the priming edges, then prove each interior actually decoded
-	// to ITS OWN source chirp and not the other. rms > 0 alone would pass on
-	// looped or garbage audio; matching each half to its distinct source is what
-	// proves the timeline resumed with the correct signal on each side.
+	// Take an interior half-second-inset slice of each decoded half and prove it
+	// decoded to ITS OWN source chirp and not the other. rms > 0 alone would
+	// pass on looped or garbage audio; matching each half to its distinct source
+	// is what proves the timeline resumed with the correct signal on each side.
+	// The decoded halves each align to their source at lag zero (pre from the
+	// start, post from the seam), so slicing the source at the same inset lets a
+	// small lag search absorb the seam and priming jitter cheaply.
+	const inset = testRate / 2
 	mid := len(decF) / 2
-	preDec := decF[testRate/2 : mid-testRate/2]
-	postDec := decF[mid+testRate/2 : len(decF)-testRate/2]
-	preSrc := deinterleaveCh0(srcPre, 1)
-	postSrc := deinterleaveCh0(srcPost, 1)
+	preDec := decF[inset : mid-inset]
+	postDec := decF[mid+inset : len(decF)-inset]
+	preSrc := deinterleaveCh0(srcPre, 1)[inset:]
+	postSrc := deinterleaveCh0(srcPost, 1)[inset:]
 
-	preOwn, _ := bestCorrelation(preDec, preSrc, testRate)
-	preOther, _ := bestCorrelation(preDec, postSrc, testRate)
+	preOwn, _ := bestCorrelation(preDec, preSrc, interopMaxLag)
+	preOther, _ := bestCorrelation(preDec, postSrc, interopMaxLag)
 	assert.Greater(t, preOwn, 0.8, "pre-gap audio does not match the pre-gap source chirp (%.3f)", preOwn)
 	assert.Greater(t, preOwn, preOther+0.2, "pre-gap audio matches the post-gap source too well to be distinct (own %.3f, other %.3f)", preOwn, preOther)
 
-	postOwn, _ := bestCorrelation(postDec, postSrc, testRate)
-	postOther, _ := bestCorrelation(postDec, preSrc, testRate)
+	postOwn, _ := bestCorrelation(postDec, postSrc, interopMaxLag)
+	postOther, _ := bestCorrelation(postDec, preSrc, interopMaxLag)
 	assert.Greater(t, postOwn, 0.8, "post-gap audio does not match the post-gap source chirp (%.3f)", postOwn)
 	assert.Greater(t, postOwn, postOther+0.2, "post-gap audio matches the pre-gap source too well to be distinct (own %.3f, other %.3f)", postOwn, postOther)
 }
@@ -374,22 +384,24 @@ func TestInteropWindowEvictionDecodes(t *testing.T) {
 	t.Parallel()
 	requireFFmpeg(t)
 
+	// A two-segment window so a modest stream overflows it: eight seconds at
+	// two-second segments is four segments, evicting the oldest two.
+	const windowSize = 2
 	s, err := hls.New(&hls.Config{
 		Codec:       AACLC(),
 		SampleRate:  testRate,
 		Channels:    1,
 		BitrateKbps: 96,
+		WindowSize:  windowSize,
 	})
 	require.NoError(t, err)
 
-	// Sixteen seconds at two-second segments is eight segments, more than the
-	// six-segment default window, so the oldest two are evicted.
-	src, _ := feedChirp(t, s, sampleTime(0), 16, 1, 300, 8000)
+	src, _ := feedChirp(t, s, sampleTime(0), 8, 1, 300, 8000)
 	require.NoError(t, s.Close())
 
 	stats := s.Stats()
-	require.Greater(t, stats.Segments, uint64(hls.DefaultWindowSize), "not enough segments to force eviction")
-	require.Equal(t, hls.DefaultWindowSize, stats.Retained, "the window must cap at its size")
+	require.Greater(t, stats.Segments, uint64(windowSize), "not enough segments to force eviction")
+	require.Equal(t, windowSize, stats.Retained, "the window must cap at its size")
 
 	playlist := writeHLSDir(t, s)
 	body, err := os.ReadFile(playlist)
@@ -398,7 +410,9 @@ func TestInteropWindowEvictionDecodes(t *testing.T) {
 
 	// The oldest retained segment starts partway into the source; its PDT gives
 	// the exact sample offset. The decoded window should then be that tail of
-	// the source, aligned near lag zero.
+	// the source, aligned near lag zero, so a short leading slice with a small
+	// lag search confirms the offset math and that no unit was dropped at the
+	// window's front.
 	var first hls.Segment
 	for seq := uint64(0); seq < stats.Segments; seq++ {
 		if seg, ok := s.Segment(seq); ok {
@@ -411,7 +425,8 @@ func TestInteropWindowEvictionDecodes(t *testing.T) {
 
 	srcTail := deinterleaveCh0(src, 1)[offset:]
 	decF := deinterleaveCh0(decodePCM(t, playlist, 1), 1)
-	corr, lag := bestCorrelation(decF, srcTail, 1024)
+	require.Greater(t, len(decF), 2*testRate, "decoded window is unexpectedly short")
+	corr, lag := bestCorrelation(decF[:2*testRate], srcTail, interopMaxLag)
 	assert.Greater(t, corr, 0.95, "the retained window is not the matching tail of the source (corr %.3f at lag %d)", corr, lag)
 }
 
