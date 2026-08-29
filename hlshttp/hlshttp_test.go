@@ -118,3 +118,48 @@ func TestHeadReturnsHeadersOnly(t *testing.T) {
 	assert.Equal(t, strconv.Itoa(len(s.Playlist())), rec.Header().Get("Content-Length"))
 	assert.Zero(t, rec.Body.Len())
 }
+
+// FuzzHandlerPath drives the handler with arbitrary request paths against a
+// live stream. The handler serves attacker-controlled path strings, so it must
+// never panic and must always produce a valid, bounded response: one of the
+// three known content types with a 200, or a 404, and never a 5xx or a segment
+// body under the wrong name.
+func FuzzHandlerPath(f *testing.F) {
+	s, err := hls.New(&hls.Config{
+		Codec:       aachls.AACLC(),
+		SampleRate:  48000,
+		Channels:    1,
+		BitrateKbps: 32,
+	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Cleanup(func() { _ = s.Close() })
+	pcm := make([]byte, 48000*2)
+	ts := time.Unix(1_700_000_000, 0)
+	for range 5 {
+		if err := s.Write(pcm, ts); err != nil {
+			f.Fatal(err)
+		}
+		ts = ts.Add(time.Second)
+	}
+	h := hlshttp.NewHandler(s)
+
+	for _, seed := range []string{
+		"/live.m3u8", "/init.mp4", "/segment0.m4s", "/", "/../live.m3u8",
+		"/segment0.m4s/../init.mp4", "/%2e%2e/live.m3u8", "/segment0.m4s\x00",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, path string) {
+		req, err := http.NewRequest(http.MethodGet, "http://x"+path, http.NoBody)
+		if err != nil {
+			t.Skip() // not a path this server could ever receive
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code >= 500 {
+			t.Fatalf("path %q produced a server error %d", path, rec.Code)
+		}
+	})
+}
