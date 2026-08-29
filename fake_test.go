@@ -200,6 +200,12 @@ type fakeCodecOptions struct {
 	// otherwise panic inside New.
 	nilEncoder bool
 
+	// badWriterConfig makes writerConfig return successfully but with a
+	// STREAMINFO go-m4a rejects, so New fails inside m4a.InitSegment rather
+	// than in the codec's own writerConfig. That is the path that must still
+	// Close the encoder it already built.
+	badWriterConfig bool
+
 	// captured receives the encoder once built, so a test can inspect it.
 	captured **fakeEncoder
 }
@@ -249,11 +255,17 @@ func newFakeCodec(opts *fakeCodecOptions) Codec {
 			if opts.writerErr != nil {
 				return m4a.WriterConfig{}, opts.writerErr
 			}
+			streamInfo := enc.DecoderConfig()
+			if opts.badWriterConfig {
+				// A STREAMINFO shorter than the fixed 34 bytes: valid to return
+				// here, but rejected by go-m4a's fragmented constructors.
+				streamInfo = streamInfo[:10]
+			}
 			return m4a.WriterConfig{
 				Codec:        m4a.CodecFLAC,
 				SampleRate:   cfg.SampleRate,
 				Channels:     cfg.Channels,
-				STREAMINFO:   enc.DecoderConfig(),
+				STREAMINFO:   streamInfo,
 				EncoderDelay: enc.Delay(),
 			}, nil
 		},

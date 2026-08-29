@@ -32,6 +32,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # The interop tests decode go-hls's own output with ffmpeg, the one check
+      # that a real HLS demuxer agrees with the container and playlist we emit.
+      # They skip when ffmpeg is absent, so without an explicit install the
+      # suite would report success having never run them. Linux only: one
+      # third-party decode is enough, and it keeps the macOS/Windows legs lean.
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Download dependencies
         run: go mod download
 
@@ -133,3 +142,26 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build ./...
+
+  fuzz:
+    name: Fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # Short bounded runs of the untrusted-input fuzz targets on every build.
+      # The segment-name parser and the HTTP handler both consume attacker-
+      # controlled path strings, so this guards against a panic or a broken
+      # round-trip; any crash is committed under testdata/fuzz as a seed.
+      - name: Fuzz segment-name parser
+        run: |
+          go test -run='^$' -fuzz=FuzzParseSegmentName -fuzztime=20s .
+          go test -run='^$' -fuzz=FuzzSegmentNameRoundTrip -fuzztime=20s .
+      - name: Fuzz HTTP handler paths
+        run: go test -run='^$' -fuzz=FuzzHandlerPath -fuzztime=20s ./hlshttp
