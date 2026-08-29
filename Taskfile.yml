@@ -1,0 +1,37 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build all packages
+    cmds:
+      - go build ./...
+
+  vet:
+    desc: Vet for amd64 and arm64
+    cmds:
+      - go vet ./...
+      - GOOS=linux GOARCH=arm64 go vet ./...
+
+  fmt:check:
+    desc: Fail if any file is not gofmt-clean
+    cmds:
+      - test -z "$(gofmt -l .)"
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  test:
+    desc: Run the full test suite with the race detector
+    cmds:
+      - go test -race ./...
+
+  check:all:
+    desc: Full pre-push gate
+    cmds:
+      - task: build
+      - task: vet
+      - task: fmt:check
+      - task: lint
+      - task: test

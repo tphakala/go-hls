@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.26'
+  # Pinned to match the local toolchain so the linter version is identical
+  # across developer machines and CI.
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        if: matrix.os != 'ubuntu-latest'
+        run: go test -race ./...
+
+      # Coverage is generated once, on Linux, and uploaded to Codecov.
+      # -coverpkg credits cross-package coverage so the aachls and hlshttp
+      # packages exercised through the muxer's public API are counted.
+      - name: Run tests with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v7
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+
+      # aachls pulls in go-aac, whose SIMD kernels are the default build with
+      # -tags noasm selecting the scalar Go path instead. That tag reaches
+      # go-aac through this module, making the scalar path a supported build of
+      # go-hls that no other job here covers. Run the suite rather than a build
+      # so go-aac's scalar kernels actually execute.
+      - name: Run tests (-tags noasm)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -tags noasm ./...
+
+  # The muxer does size and offset arithmetic that must stay correct on 32-bit
+  # targets (BirdNET-Go ships on 32-bit ARM). The race detector is 64-bit only,
+  # so this runs without it; a 386 binary executes on the amd64 runner.
+  test-386:
+    name: Test (386)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run tests (GOARCH=386)
+        env:
+          GOARCH: '386'
+        run: go test ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  vet:
+    name: Vet
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64, '386']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run go vet
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet ./...
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...

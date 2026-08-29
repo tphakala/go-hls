@@ -1,0 +1,97 @@
+# Linting standard shared with the sibling tphakala Go audio libraries
+# (go-m4a, go-flac, go-aac, go-opus), trimmed to what go-hls needs: the common
+# linter set, plus the gocritic ruleguard matchers in internal/rules/*.go for
+# modern-Go patterns. Those rule files carry the `ruleguard` build tag so the
+# normal toolchain ignores them; tools/tools.go anchors the DSL dependency for
+# `go mod tidy`.
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - iface
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - predeclared
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - thelper
+    - unconvert
+    - wastedassign
+  disable:
+    - unused
+  settings:
+    gocognit:
+      min-complexity: 50
+    gocritic:
+      # gocritic auto-enables the ruleguard check when settings.ruleguard.rules
+      # is set; the internal/rules/*.go matchers carry the //go:build ruleguard
+      # tag so the normal toolchain ignores them.
+      disabled-checks:
+        - commentFormatting
+        - commentedOutCode
+      enabled-tags:
+        - style
+        - diagnostic
+        - performance
+      settings:
+        hugeParam:
+          # Several value types (Segment, Stats, Codec) cross the public API by
+          # value by convention; raise the default 80-byte threshold to two
+          # cache lines rather than force pointers through the API.
+          sizeThreshold: 128
+        ruleguard:
+          rules: "internal/rules/*.go"
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+        - name: exported
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    exhaustive:
+      default-signifies-exhaustive: true
+  exclusions:
+    generated: lax
+    rules:
+      # Table-driven tests are naturally long and repetitive.
+      - path: _test\.go
+        linters:
+          - dupl
+          - gocognit
+          - gocyclo
+          - goconst
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/tphakala/go-hls
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false

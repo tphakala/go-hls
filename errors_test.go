@@ -15,8 +15,8 @@ func TestWriteAfterCloseWrapsErrClosed(t *testing.T) {
 	require.NoError(t, s.Close())
 
 	err = s.Write(silence(1024, 1), time.Unix(1, 0))
-	assert.ErrorIs(t, err, ErrClosed)
-	assert.NotErrorIs(t, err, ErrFailed)
+	require.ErrorIs(t, err, ErrClosed)
+	require.NotErrorIs(t, err, ErrFailed)
 }
 
 func TestLatchingFailureWrapsErrFailed(t *testing.T) {
@@ -29,13 +29,13 @@ func TestLatchingFailureWrapsErrFailed(t *testing.T) {
 	ts := time.Unix(1, 0)
 	err = s.Write(silence(4096, 1), ts)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrFailed)
+	require.ErrorIs(t, err, ErrFailed)
 	assert.True(t, s.Stats().Failed)
 
 	// Every later Write reports the latch too.
 	err = s.Write(silence(1024, 1), ts.Add(time.Second))
-	assert.ErrorIs(t, err, ErrFailed)
-	assert.NotErrorIs(t, err, ErrClosed)
+	require.ErrorIs(t, err, ErrFailed)
+	require.NotErrorIs(t, err, ErrClosed)
 }
 
 func TestMisalignedPCMDoesNotLatch(t *testing.T) {
@@ -47,8 +47,8 @@ func TestMisalignedPCMDoesNotLatch(t *testing.T) {
 	ts := time.Unix(1, 0)
 	err = s.Write(make([]byte, 3), ts)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrFailed)
-	assert.NotErrorIs(t, err, ErrClosed)
+	require.NotErrorIs(t, err, ErrFailed)
+	require.NotErrorIs(t, err, ErrClosed)
 	assert.False(t, s.Stats().Failed)
 
 	// The stream is still usable after the rejection.

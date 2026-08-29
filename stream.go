@@ -28,12 +28,14 @@ const (
 	// latency low, long enough that per-segment overhead stays negligible.
 	DefaultSegmentDuration = 2 * time.Second
 
-	// MinSegmentDuration and MaxSegmentDuration bound what a caller may ask
-	// for. The floor keeps SegmentDuration above one sample period, below
-	// which every access unit would become its own segment; the ceiling keeps
-	// the segment inside go-m4a's own per-segment limits and keeps the
-	// duration-to-samples conversion far from overflow.
+	// MinSegmentDuration is the floor a caller may ask for. It keeps
+	// SegmentDuration above one sample period, below which every access unit
+	// would become its own segment.
 	MinSegmentDuration = 100 * time.Millisecond
+
+	// MaxSegmentDuration is the ceiling a caller may ask for. It keeps the
+	// segment inside go-m4a's own per-segment limits and keeps the
+	// duration-to-samples conversion far from overflow.
 	MaxSegmentDuration = 60 * time.Second
 
 	// DefaultWindowSize is how many media segments the playlist advertises.

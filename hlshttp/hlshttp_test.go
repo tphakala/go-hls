@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	hls "github.com/tphakala/go-hls"
 	"github.com/tphakala/go-hls/aachls"
 	"github.com/tphakala/go-hls/hlshttp"
@@ -39,7 +40,7 @@ func newLiveStream(t *testing.T) *hls.Stream {
 
 func do(h http.Handler, method, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	h.ServeHTTP(rec, httptest.NewRequest(method, path, http.NoBody))
 	return rec
 }
 
