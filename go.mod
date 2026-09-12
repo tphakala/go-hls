@@ -5,8 +5,8 @@ go 1.26
 require (
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/stretchr/testify v1.12.1
-	github.com/tphakala/go-aac v0.6.0
-	github.com/tphakala/go-m4a v0.4.0
+	github.com/tphakala/go-aac v0.7.0
+	github.com/tphakala/go-m4a v0.5.0
 )
 
 require (
