@@ -52,7 +52,8 @@ type FrameEncoder interface {
 // is being asked to produce. Anything codec-specific belongs in the Codec that
 // builds the encoder, not here.
 type EncoderConfig struct {
-	// SampleRate is the output sample rate in Hz.
+	// SampleRate is the output sample rate in Hz. New guarantees it lies
+	// between 1 and MaxSampleRate.
 	SampleRate int
 
 	// Channels is the output channel count.
