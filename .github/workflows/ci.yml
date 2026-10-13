@@ -7,10 +7,12 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.26'
+  # A minor version, not a patch: with check-latest on every setup-go step,
+  # CI always runs the newest 1.27.x. The go line in go.mod is only a floor.
+  GO_VERSION: '1.27'
   # Pinned to match the local toolchain so the linter version is identical
   # across developer machines and CI.
-  GOLANGCI_LINT_VERSION: 'v2.12.2'
+  GOLANGCI_LINT_VERSION: 'v2.14.0'
 
 permissions:
   contents: read
@@ -31,6 +33,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
 
       # The interop tests decode go-hls's own output with ffmpeg, the one check
       # that a real HLS demuxer agrees with the container and playlist we emit.
@@ -84,6 +87,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Run tests (GOARCH=386)
         env:
           GOARCH: '386'
@@ -99,6 +103,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -118,6 +123,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Run go vet
         env:
           GOARCH: ${{ matrix.goarch }}
@@ -137,6 +143,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -155,6 +162,7 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true
       # Short bounded runs of the untrusted-input fuzz targets on every build.
       # The segment-name parser and the HTTP handler both consume attacker-
       # controlled path strings, so this guards against a panic or a broken

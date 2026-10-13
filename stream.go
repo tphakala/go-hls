@@ -38,6 +38,11 @@ const (
 	// duration-to-samples conversion far from overflow.
 	MaxSegmentDuration = 60 * time.Second
 
+	// MaxSampleRate is the highest SampleRate New accepts: the largest rate
+	// go-m4a's fragmented MP4 writer accepts for any codec (FLAC STREAMINFO's
+	// 20-bit field). A codec may accept a narrower range.
+	MaxSampleRate = 1<<20 - 1
+
 	// DefaultWindowSize is how many media segments the playlist advertises.
 	// It must stay above hls.js's liveSyncDurationCount (three by default),
 	// with headroom for a slow poller.
@@ -68,13 +73,19 @@ const (
 	driftCorrectionShift = 4
 )
 
+// Fails to compile if a MaxSegmentDuration segment at MaxSampleRate would not
+// fit int32, which the int() sample count in New (32 bits on 32-bit
+// platforms) and the uint32 frame duration in appendAccessUnit rely on.
+const _ = int32(int64(MaxSegmentDuration) * MaxSampleRate / int64(time.Second))
+
 // Config describes the live stream to be produced. Everything codec-specific
 // is carried by Codec, so this stays the same shape whichever codec is used.
 type Config struct {
 	// Codec supplies the encoder and the container description. Required.
 	Codec Codec
 
-	// SampleRate is the output sample rate in Hz. Required.
+	// SampleRate is the output sample rate in Hz. Required. It must lie
+	// between 1 and MaxSampleRate; the codec may accept a narrower range.
 	//
 	// Callers with a resampling stage upstream should pin this to one value
 	// (48000 is the safe choice) rather than follow each source, which removes
@@ -411,6 +422,8 @@ func (c *Config) validate() error {
 		return validationErr("hls: codec is not set")
 	case c.SampleRate <= 0:
 		return validationErr("hls: sample rate must be positive, got %d", c.SampleRate)
+	case c.SampleRate > MaxSampleRate:
+		return validationErr("hls: sample rate %d exceeds the maximum of %d", c.SampleRate, MaxSampleRate)
 	case c.Channels != 1 && c.Channels != 2:
 		return validationErr("hls: channel count must be 1 or 2, got %d", c.Channels)
 	case c.BitrateKbps < 0:

@@ -88,6 +88,7 @@ func TestNewValidatesConfig(t *testing.T) {
 		{"zero codec", func(c *Config) { c.Codec = Codec{} }, "codec is not set"},
 		{"zero sample rate", func(c *Config) { c.SampleRate = 0 }, "sample rate must be positive"},
 		{"negative sample rate", func(c *Config) { c.SampleRate = -1 }, "sample rate must be positive"},
+		{"sample rate above the ceiling", func(c *Config) { c.SampleRate = MaxSampleRate + 1 }, "sample rate 1048576 exceeds the maximum"},
 		{"three channels", func(c *Config) { c.Channels = 3 }, "channel count must be 1 or 2"},
 		{"zero channels", func(c *Config) { c.Channels = 0 }, "channel count must be 1 or 2"},
 		{"negative bitrate", func(c *Config) { c.BitrateKbps = -1 }, "bitrate must not be negative"},
@@ -1144,6 +1145,63 @@ func TestNewRejectsSegmentTargetBelowOneAccessUnit(t *testing.T) {
 			assert.True(t, enc.closed, "a rejected configuration must still release the encoder")
 		})
 	}
+}
+
+// TestNewAcceptsMaxSampleRateAtEverySegmentBound pins the top of the accepted
+// range: MaxSampleRate must build a stream at every segment duration validate
+// allows, with an exact segment target even at MaxSegmentDuration, on 32-bit
+// builds as well as 64-bit.
+func TestNewAcceptsMaxSampleRateAtEverySegmentBound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		segment time.Duration
+	}{
+		{"default segment duration", 0},
+		{"minimum segment duration", MinSegmentDuration},
+		{"maximum segment duration", MaxSegmentDuration},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := New(&Config{
+				Codec:           newFakeCodec(&fakeCodecOptions{}),
+				SampleRate:      MaxSampleRate,
+				Channels:        testChannels,
+				BitrateKbps:     testBitrate,
+				SegmentDuration: tt.segment,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close() })
+			effective := tt.segment
+			if effective == 0 {
+				effective = DefaultSegmentDuration
+			}
+			want := int(int64(effective) * MaxSampleRate / int64(time.Second))
+			assert.Equal(t, want, s.targetSamples)
+		})
+	}
+}
+
+// TestNewRejectsSampleRateAboveMaxBeforeBuildingEncoder pins that an
+// out-of-range rate is refused by validate, so the codec's encoder is never
+// built with it.
+func TestNewRejectsSampleRateAboveMaxBeforeBuildingEncoder(t *testing.T) {
+	t.Parallel()
+
+	var enc *fakeEncoder
+	s, err := New(&Config{
+		Codec:       newFakeCodec(&fakeCodecOptions{captured: &enc}),
+		SampleRate:  MaxSampleRate + 1,
+		Channels:    testChannels,
+		BitrateKbps: testBitrate,
+	})
+	require.Error(t, err)
+	assert.Nil(t, s)
+	assert.Contains(t, err.Error(), "sample rate 1048576 exceeds the maximum of 1048575")
+	assert.Nil(t, enc, "validate must reject the rate before the encoder is built")
 }
 
 // TestNewAcceptsASegmentThatFitsExactlyOneAccessUnit pins the boundary: the
