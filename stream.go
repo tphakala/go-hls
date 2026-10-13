@@ -38,12 +38,9 @@ const (
 	// duration-to-samples conversion far from overflow.
 	MaxSegmentDuration = 60 * time.Second
 
-	// MaxSampleRate is the highest SampleRate New accepts. It is the largest
-	// rate go-m4a's fragmented MP4 writer accepts for any codec (the 20-bit
-	// sample rate field of FLAC's STREAMINFO), and it keeps the sample count
-	// of a MaxSegmentDuration segment inside int32, so the duration-to-samples
-	// conversion cannot overflow on any platform. A codec may accept a
-	// narrower range.
+	// MaxSampleRate is the highest SampleRate New accepts: the largest rate
+	// go-m4a's fragmented MP4 writer accepts for any codec (FLAC STREAMINFO's
+	// 20-bit field). A codec may accept a narrower range.
 	MaxSampleRate = 1<<20 - 1
 
 	// DefaultWindowSize is how many media segments the playlist advertises.
@@ -76,11 +73,9 @@ const (
 	driftCorrectionShift = 4
 )
 
-// A MaxSegmentDuration segment at MaxSampleRate must fit int32: New converts
-// the segment duration to a sample count with int(), which is 32 bits on
-// 32-bit platforms, and appendAccessUnit narrows frame durations bounded by
-// that count to uint32. This fails to compile if either bound is raised past
-// that limit.
+// Fails to compile if a MaxSegmentDuration segment at MaxSampleRate would not
+// fit int32, which the int() sample count in New (32 bits on 32-bit
+// platforms) and the uint32 frame duration in appendAccessUnit rely on.
 const _ = int32(int64(MaxSegmentDuration) * MaxSampleRate / int64(time.Second))
 
 // Config describes the live stream to be produced. Everything codec-specific

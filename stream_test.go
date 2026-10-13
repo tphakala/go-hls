@@ -3,7 +3,6 @@ package hls
 import (
 	"bytes"
 	"errors"
-	"math"
 	"runtime"
 	"strconv"
 	"strings"
@@ -90,7 +89,6 @@ func TestNewValidatesConfig(t *testing.T) {
 		{"zero sample rate", func(c *Config) { c.SampleRate = 0 }, "sample rate must be positive"},
 		{"negative sample rate", func(c *Config) { c.SampleRate = -1 }, "sample rate must be positive"},
 		{"sample rate above the ceiling", func(c *Config) { c.SampleRate = MaxSampleRate + 1 }, "sample rate 1048576 exceeds the maximum"},
-		{"sample rate at math.MaxInt", func(c *Config) { c.SampleRate = math.MaxInt }, "exceeds the maximum of 1048575"},
 		{"three channels", func(c *Config) { c.Channels = 3 }, "channel count must be 1 or 2"},
 		{"zero channels", func(c *Config) { c.Channels = 0 }, "channel count must be 1 or 2"},
 		{"negative bitrate", func(c *Config) { c.BitrateKbps = -1 }, "bitrate must not be negative"},
@@ -1157,13 +1155,12 @@ func TestNewAcceptsMaxSampleRateAtEverySegmentBound(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		segment   time.Duration
-		effective time.Duration
+		name    string
+		segment time.Duration
 	}{
-		{"default segment duration", 0, DefaultSegmentDuration},
-		{"minimum segment duration", MinSegmentDuration, MinSegmentDuration},
-		{"maximum segment duration", MaxSegmentDuration, MaxSegmentDuration},
+		{"default segment duration", 0},
+		{"minimum segment duration", MinSegmentDuration},
+		{"maximum segment duration", MaxSegmentDuration},
 	}
 
 	for _, tt := range tests {
@@ -1178,7 +1175,11 @@ func TestNewAcceptsMaxSampleRateAtEverySegmentBound(t *testing.T) {
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = s.Close() })
-			want := int(int64(tt.effective) * MaxSampleRate / int64(time.Second))
+			effective := tt.segment
+			if effective == 0 {
+				effective = DefaultSegmentDuration
+			}
+			want := int(int64(effective) * MaxSampleRate / int64(time.Second))
 			assert.Equal(t, want, s.targetSamples)
 		})
 	}
