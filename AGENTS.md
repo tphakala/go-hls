@@ -16,7 +16,7 @@ Packages:
 |---|---|
 | `hls` (root) | Codec-agnostic `Stream` (`New`, `Write`, `Close`, `Playlist`, `Segment`, `InitSegment`, `Ready`, `Stats`), `Config`, `Codec`, `FrameEncoder`, `EmitFunc`, `EncoderConfig`, `Segment`, `SegmentName`/`ParseSegmentName`, `ErrClosed`, `ErrFailed` |
 | `aachls` | AAC-LC `Codec` (`AACLC()`) backed by go-aac |
-| `hlshttp` | `http.Handler` (`NewHandler`) serving the playlist, init segment and media segments; stdlib only |
+| `hlshttp` | `http.Handler` (`NewHandler`) serving the playlist, init segment and media segments; stdlib plus the root `hls` package only |
 | `internal/rules` | gocritic ruleguard matchers (build tag `ruleguard`, lint-only) |
 | `tools` | `tools.go` anchoring the go-ruleguard DSL dependency for `go mod tidy` |
 
@@ -32,9 +32,9 @@ The design rules below are the library's contract and hold across every release.
 
 A change that violates one of these is wrong even if tests pass.
 
-1. **The root package never names a codec.** `hls` imports only go-m4a (plus stdlib). Never import go-aac, go-opus or go-flac into the root package, including from its tests; codec-specific code belongs in a subpackage such as `aachls`. `Codec` stays unsealed (exported function fields) so third parties can plug in any codec go-m4a can mux.
+1. **The root package never names a codec.** `hls` imports only go-m4a (plus stdlib; its tests also use testify). Never import go-aac, go-opus or go-flac into the root package, including from its tests; codec-specific code belongs in a subpackage such as `aachls`. `Codec` stays unsealed (exported function fields) so third parties can plug in any codec go-m4a can mux.
 2. **No cgo, no filesystem, no network, no subprocess** in `hls`. That is what keeps segment cutting, timeline arithmetic and playlist shape table-testable.
-3. **The read side is lock-free.** `Playlist`, `PlaylistAndStats`, `Segment`, `InitSegment`, `Ready` and `Stats` read an immutable `view` through `atomic.Pointer` (plus atomics for drift correction and the failed flag). `publishView` runs once per segment cut and on `Close`. Never take `Stream.mu` on a read path, and never mutate a published `view` or a published `Segment.Data`.
+3. **The read side is lock-free.** `Playlist`, `PlaylistAndStats`, `Segment`, `InitSegment`, `Ready` and `Stats` read an immutable `view` through `atomic.Pointer` (plus atomics for drift correction and the failed flag). `publishView` runs once in `New`, once per segment cut and on `Close`. Never take `Stream.mu` on a read path, and never mutate a published `view` or a published `Segment.Data`.
 4. **`EmitFunc` runs under the stream mutex.** An encoder callback must not call back into any `Stream` method (Go mutexes are not reentrant). The `au` slice is borrowed and valid only until the callback returns; the muxer relies on go-m4a's `FragmentWriter` copying it.
 5. **Failures latch.** If the encoder or container rejects audio, the stream sets the failed flag and every later `Write` returns `ErrFailed` (wrapped with the codec name on the latching write). Do not add a recovery path that continues with a timeline that no longer matches the consumed audio. `ErrClosed` means `Write` after `Close` began. Callers test both with `errors.Is`.
 6. **`Close` is idempotent and always publishes the ended view.** The final `publishView(true)` is deferred so it runs even if codec code panics during flush; keep it deferred.
@@ -72,7 +72,7 @@ Tests need no audio hardware; only the interop tests need an external tool.
 
 - **Regression tests.** New behaviour gets a test. A bug fix gets a regression test that fails before the fix. A test must be able to fail: break the line it pins and confirm it fails.
 - **Fake codec.** `fake_test.go` implements `FrameEncoder` and a `Codec` for the root tests. go-m4a rejects an all-zero or deferred FLAC STREAMINFO for fragmented output and cross-checks its sample rate against the writer config, so the fake must emit a populated 34-byte STREAMINFO matching the configured rate and channels.
-- **Interop with ffmpeg.** `aachls/interop_test.go` decodes go-hls's own output with ffmpeg and ffprobe. They skip when ffmpeg is absent; the Linux CI leg installs it. Correlation checks use a chirp, not a fixed tone: a fixed sine repeats every 16 samples and an AAC access unit is 1024 samples, so a dropped frame would realign the phase and still pass. The lag search is bounded (`interopMaxLag`) because a full-rate sweep makes the `-race` run too slow.
+- **Interop with ffmpeg.** `aachls/interop_test.go` decodes go-hls's own output with ffmpeg and ffprobe. They skip when ffmpeg is absent; the Linux CI leg installs it. Correlation checks use a chirp, not a fixed tone: a fixed tone is periodic on a scale much shorter than the 1024-sample AAC access unit, so a dropped frame would realign the phase and still pass. The lag search is bounded (`interopMaxLag`) because a full-rate sweep makes the `-race` run too slow.
 - **Fuzzing.** `FuzzParseSegmentName` and `FuzzSegmentNameRoundTrip` (root), `FuzzHandlerPath` (`hlshttp`). A `-fuzz` pattern that matches nothing passes without running, so run a new target in the package that defines it. Crashers are committed as seeds under `testdata/fuzz`.
 - **Architectures.** CI also runs the suite as a `GOARCH=386` binary (without `-race`, which is 64-bit only), because size and offset arithmetic must hold on 32-bit.
 - **Benchmarks.** `bench_test.go` in the root and in `aachls`.
