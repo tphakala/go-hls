@@ -4,10 +4,10 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/tphakala/go-aac v0.7.1 h1:/aspCjUIl+7i+Xs6K43Xm7P+yucn3V6WSvEbdzOyebU=
 github.com/tphakala/go-aac v0.7.1/go.mod h1:5BL5jIIhw7Q1R6Tl7mUOHSoEQeKG7EUVNAGYRIQ7xbg=
-github.com/tphakala/go-m4a v0.7.0 h1:XRHyluz8HHTsKgzh8DGsIZbiJX3LfCvwhBZFUgivyWE=
-github.com/tphakala/go-m4a v0.7.0/go.mod h1:gvAHt12fiA4nlJ6WymOda/AfV2j05aTFQbj5LYfOA/c=
-github.com/tphakala/simd v1.13.0 h1:toN0PH/OIyPlaSaaQQ9Z/IwjVFrrAq2iJsi0Lbtlm2Q=
-github.com/tphakala/simd v1.13.0/go.mod h1:eO53GkWg40mRbr2tzs0Xb1IMZQ5U8cMR+Aa1RlXUinE=
+github.com/tphakala/go-m4a v0.8.0 h1:POl3pl/c/E8Z0oF3e8NTkZzGBZwASEpg8KGn5ni3bXs=
+github.com/tphakala/go-m4a v0.8.0/go.mod h1:MN0KqPnIT3Pavih7iRmOwj4VspM52IgKimnxMBF1Lkw=
+github.com/tphakala/simd v1.14.0 h1:f1ZBojSE3udWggptQpGyTynVfVdCZxd/KTTfaiDeoCA=
+github.com/tphakala/simd v1.14.0/go.mod h1:eO53GkWg40mRbr2tzs0Xb1IMZQ5U8cMR+Aa1RlXUinE=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
 golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
